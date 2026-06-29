@@ -1,0 +1,108 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model Account {
+  id          String      @id @default(cuid())
+  name        String
+  type        String
+  balance     Float       @default(0)
+  creditLimit Float?
+  currency    String      @default("MXN")
+  color       String      @default("#4ade80")
+  icon        String      @default("wallet")
+  isActive    Boolean     @default(true)
+  createdAt   DateTime    @default(now())
+
+  transactions   Transaction[] @relation("FromAccount")
+  toTransactions Transaction[] @relation("ToAccount")
+}
+
+model Category {
+  id           String        @id @default(cuid())
+  name         String
+  type         String
+  color        String        @default("#4ade80")
+  icon         String        @default("tag")
+  isDefault    Boolean       @default(false)
+  transactions Transaction[]
+  budgets      Budget[]
+}
+
+model Transaction {
+  id            String    @id @default(cuid())
+  date          DateTime
+  type          String
+  amount        Float
+  accountId     String
+  account       Account   @relation("FromAccount", fields: [accountId], references: [id])
+  toAccountId   String?
+  toAccount     Account?  @relation("ToAccount", fields: [toAccountId], references: [id])
+  categoryId    String
+  category      Category  @relation(fields: [categoryId], references: [id])
+  description   String
+  paymentMethod String?
+  isRecurring   Boolean   @default(false)
+  isBudgeted    Boolean   @default(false)
+  notes         String?
+  createdAt     DateTime  @default(now())
+}
+
+model Budget {
+  id          String   @id @default(cuid())
+  categoryId  String
+  category    Category @relation(fields: [categoryId], references: [id])
+  period      String
+  year        Int
+  month       Int?
+  week        Int?
+  limitAmount Float
+  createdAt   DateTime @default(now())
+
+  @@unique([categoryId, period, year, month, week])
+}
+
+model FinancialGoal {
+  id            String    @id @default(cuid())
+  name          String
+  type          String
+  targetAmount  Float
+  currentAmount Float     @default(0)
+  deadline      DateTime?
+  accountId     String?
+  notes         String?
+  isCompleted   Boolean   @default(false)
+  createdAt     DateTime  @default(now())
+}
+
+model Reminder {
+  id          String   @id @default(cuid())
+  title       String
+  type        String
+  dueDate     DateTime
+  amount      Float?
+  accountId   String?
+  isRecurring Boolean  @default(false)
+  isDone      Boolean  @default(false)
+  notes       String?
+  createdAt   DateTime @default(now())
+}
+
+// Cada depósito o retiro de un rubro de ahorro
+model SavingsEntry {
+  id             String   @id @default(cuid())
+  bucket         String   // nombre del rubro, ej: "Necesidades", "Gathijas"
+  type           String   // DEPOSIT | WITHDRAWAL
+  amount         Float
+  date           DateTime @default(now())
+  notes          String?
+  color          String   @default("#4ade80")
+  emoji          String?
+  distributionId String?  // agrupa las entradas de un mismo "Guardar registro"
+  createdAt      DateTime @default(now())
+}
