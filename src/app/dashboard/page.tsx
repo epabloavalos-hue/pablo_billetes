@@ -1,144 +1,265 @@
-import { prisma } from '@/lib/prisma'
+'use client'
+import { useState, useEffect } from 'react'
 import { formatCurrency, formatMonth, getCurrentMonth } from '@/lib/utils'
-import { TrendingUp, TrendingDown, AlertTriangle } from 'lucide-react'
-import Link from 'next/link'
-import { IngresoGeneral } from '@/components/dashboard/ingreso-general'
-import { DisponibleBar } from '@/components/dashboard/disponible-bar'
-import { RecentTransactions } from '@/components/dashboard/recent-transactions'
+import { Plus, Trash2, AlertCircle, CheckCircle2 } from 'lucide-react'
+import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
 
-export const dynamic = 'force-dynamic'
+const STORAGE_KEY = 'finance_distribuidora_v4'
+const COLORS = ['#4ade80', '#60a5fa', '#f87171', '#fb923c', '#a78bfa', '#fbbf24', '#34d399', '#f472b6', '#94a3b8', '#e879f9']
 
-async function getDashboardData() {
-  const { year, month } = getCurrentMonth()
-  const startDate = new Date(year, month - 1, 1)
-  const endDate = new Date(year, month, 0, 23, 59, 59)
-
-  const [accounts, transactions, reminders, budgets] = await Promise.all([
-    prisma.account.findMany({ where: { isActive: true }, orderBy: { createdAt: 'asc' } }),
-    prisma.transaction.findMany({
-      where: { date: { gte: startDate, lte: endDate } },
-      include: { category: true, account: true },
-      orderBy: { date: 'desc' },
-    }),
-    prisma.reminder.findMany({
-      where: {
-        isDone: false,
-        dueDate: { lte: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000) },
-      },
-      orderBy: { dueDate: 'asc' },
-    }),
-    prisma.budget.findMany({
-      where: { period: 'MONTHLY', year, month },
-      include: { category: true },
-    }),
-  ])
-
-  const income = transactions.filter((t) => t.type === 'INCOME').reduce((s, t) => s + t.amount, 0)
-  const expenses = transactions.filter((t) => t.type === 'EXPENSE').reduce((s, t) => s + t.amount, 0)
-  const netBalance = accounts.filter((a) => a.type !== 'CREDIT_CARD').reduce((s, a) => s + a.balance, 0)
-  const creditDebt = accounts.filter((a) => a.type === 'CREDIT_CARD').reduce((s, a) => s + Math.abs(a.balance), 0)
-
-  // Spending by category this month
-  const spentByCat: Record<string, { name: string; color: string; amount: number }> = {}
-  transactions.filter((t) => t.type === 'EXPENSE').forEach((t) => {
-    if (!spentByCat[t.categoryId]) {
-      spentByCat[t.categoryId] = { name: t.category.name, color: t.category.color, amount: 0 }
-    }
-    spentByCat[t.categoryId].amount += t.amount
-  })
-
-  // Budget alerts (over 80%)
-  const spentByCatId: Record<string, number> = {}
-  transactions.filter((t) => t.type === 'EXPENSE').forEach((t) => {
-    spentByCatId[t.categoryId] = (spentByCatId[t.categoryId] ?? 0) + t.amount
-  })
-  const budgetAlerts = budgets.filter((b) => {
-    const spent = spentByCatId[b.categoryId] ?? 0
-    return spent >= b.limitAmount * 0.8
-  })
-
-  return {
-    accounts,
-    income,
-    expenses,
-    netBalance,
-    creditDebt,
-    spentByCat: Object.values(spentByCat).sort((a, b) => b.amount - a.amount).slice(0, 6),
-    recentTransactions: transactions.slice(0, 8),
-    reminders,
-    budgetAlerts,
-    currentMonth: formatMonth(year, month),
-    savingsRate: income > 0 ? ((income - expenses) / income) * 100 : 0,
-  }
+interface Rule {
+  id: string
+  label: string
+  percentage: number
+  color: string
+  emoji?: string
 }
 
-export default async function DashboardPage() {
-  const data = await getDashboardData()
+function generateId() { return Math.random().toString(36).slice(2) }
+
+const DEFAULT_RULES: Rule[] = [
+  { id: '1', label: 'Necesidades',      percentage: 35, color: '#4ade80', emoji: '🛒' },
+  { id: '2', label: 'Deseos',           percentage: 15, color: '#60a5fa', emoji: '🎮' },
+  { id: '3', label: 'Deudas',           percentage: 10, color: '#f87171', emoji: '💳' },
+  { id: '4', label: 'Vivienda',         percentage: 10, color: '#fb923c', emoji: '🏠' },
+  { id: '5', label: 'Fondo emergencia', percentage: 15, color: '#fbbf24', emoji: '🆘' },
+  { id: '6', label: 'Ahorro/Inversión', percentage:  5, color: '#a78bfa', emoji: '💰' },
+  { id: '7', label: 'Gathijas',         percentage: 10, color: '#f9a8d4', emoji: '🐱' },
+]
+
+export default function DistribuidoraPage() {
+  const { year, month } = getCurrentMonth()
+  const [rules, setRules] = useState<Rule[]>(DEFAULT_RULES)
+  const [incomeInput, setIncomeInput] = useState('')
+  const [newLabel, setNewLabel] = useState('')
+  const [newPct, setNewPct] = useState('')
+  const [newColor, setNewColor] = useState(COLORS[0])
+  const [adding, setAdding] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const [saved, setSaved] = useState(false)
+
+  const income = parseFloat(incomeInput) || 0
+
+  useEffect(() => {
+    const stored = localStorage.getItem(STORAGE_KEY)
+    if (stored) { try { setRules(JSON.parse(stored)) } catch {} }
+  }, [])
+
+  function persistRules(updated: Rule[]) {
+    setRules(updated)
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(updated))
+  }
+
+  function addRule() {
+    if (!newLabel || !newPct) return
+    persistRules([...rules, { id: generateId(), label: newLabel, percentage: parseFloat(newPct), color: newColor }])
+    setNewLabel(''); setNewPct(''); setNewColor(COLORS[rules.length % COLORS.length]); setAdding(false)
+  }
+
+  function removeRule(id: string) { persistRules(rules.filter((r) => r.id !== id)) }
+  function updatePct(id: string, v: string) { persistRules(rules.map((r) => r.id === id ? { ...r, percentage: parseFloat(v) || 0 } : r)) }
+  function updateLabel(id: string, v: string) { persistRules(rules.map((r) => r.id === id ? { ...r, label: v } : r)) }
+
+  async function guardarRegistro() {
+    if (income <= 0) return
+    setSaving(true)
+    const distributionId = generateId()
+    const items = rules.map((r) => ({ bucket: r.label, amount: income * (r.percentage / 100), color: r.color, emoji: r.emoji }))
+    await fetch('/api/savings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'distribute', distributionId, items }),
+    })
+    setSaving(false)
+    setSaved(true)
+    setTimeout(() => {
+      setSaved(false)
+      setIncomeInput('')
+    }, 1200)
+  }
+
+  const totalPct = rules.reduce((s, r) => s + r.percentage, 0)
+  const remaining = 100 - totalPct
+  const grandTotal = income * (Math.min(totalPct, 100) / 100)
 
   return (
-    <div className="p-4 md:p-6 max-w-6xl mx-auto space-y-6">
-      {/* Header */}
-      <div className="flex items-center justify-between gap-3 flex-wrap">
-        <div>
-          <h1 className="text-xl font-bold text-[var(--foreground)]">Panel financiero</h1>
-          <p className="text-sm text-[var(--muted)] capitalize">{data.currentMonth}</p>
-        </div>
-        <div className="flex items-center gap-2 flex-wrap">
-          <IngresoGeneral />
-          <Link
-            href="/dashboard/transacciones"
-            className="inline-flex items-center gap-2 rounded-lg bg-[var(--brand)] text-black px-4 py-2 text-sm font-medium hover:bg-[var(--brand-hover)] transition-colors"
-          >
-            + Nuevo movimiento
-          </Link>
-        </div>
+    <div className="p-4 md:p-6 max-w-2xl mx-auto space-y-6">
+      <div>
+        <h1 className="text-xl font-bold text-[var(--foreground)]">Distribuidora de ingresos</h1>
+        <p className="text-sm text-[var(--muted)] capitalize mt-0.5">{formatMonth(year, month)}</p>
       </div>
 
-      {/* Alertas */}
-      {(data.reminders.length > 0 || data.budgetAlerts.length > 0) && (
-        <div className="space-y-2">
-          {data.reminders.map((r) => (
-            <div key={r.id} className="flex items-center gap-3 rounded-lg border border-yellow-500/30 bg-yellow-500/10 px-4 py-3 text-sm text-yellow-300">
-              <AlertTriangle className="h-4 w-4 shrink-0" />
-              <span className="font-medium">{r.title}</span>
-              {r.amount && <span className="ml-auto text-yellow-400 font-semibold">{formatCurrency(r.amount)}</span>}
-            </div>
-          ))}
-          {data.budgetAlerts.map((b) => {
-            const spent = 0
-            return (
-              <div key={b.id} className="flex items-center gap-3 rounded-lg border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-300">
-                <AlertTriangle className="h-4 w-4 shrink-0" />
-                <span>Presupuesto de <strong>{b.category.name}</strong> al límite</span>
-              </div>
-            )
-          })}
+      {/* Income input */}
+      <div className="rounded-xl border border-green-500/30 bg-green-500/10 p-4 space-y-2">
+        <p className="text-xs text-green-400 uppercase tracking-wide">¿Cuánto dinero tienes para distribuir?</p>
+        <div className="flex items-center gap-2">
+          <span className="text-green-400 font-bold text-xl">$</span>
+          <input
+            type="number"
+            min="0"
+            step="0.01"
+            placeholder="0.00"
+            value={incomeInput}
+            onChange={(e) => { setIncomeInput(e.target.value); setSaved(false) }}
+            className="flex-1 bg-transparent text-3xl font-bold text-green-400 focus:outline-none placeholder:text-green-900 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+          />
+          <span className="text-green-600 text-sm font-medium">MXN</span>
+        </div>
+        {income === 0 && (
+          <p className="text-xs text-green-700">Escribe una cantidad para ver la distribución automática</p>
+        )}
+      </div>
+
+      {/* % warning */}
+      {Math.abs(totalPct - 100) > 0.5 && (
+        <div className={`flex items-center gap-2 rounded-lg px-4 py-3 text-sm ${remaining < 0 ? 'bg-red-500/10 border border-red-500/30 text-red-400' : 'bg-yellow-500/10 border border-yellow-500/30 text-yellow-400'}`}>
+          <AlertCircle className="h-4 w-4 shrink-0" />
+          {remaining > 0 ? `Te sobra ${remaining.toFixed(0)}% por asignar` : `Estás ${Math.abs(remaining).toFixed(0)}% por encima del 100%`}
         </div>
       )}
 
-      {/* Summary cards */}
-      <div className="space-y-3">
-        <div className="flex gap-3 flex-wrap">
-          <div className="rounded-xl border border-green-500/30 bg-green-500/10 p-4 space-y-1 flex-1 min-w-[140px]">
-            <p className="text-xs text-green-400 uppercase tracking-wide flex items-center gap-1"><TrendingUp className="h-3 w-3" /> Ingresos</p>
-            <p className="text-xl font-bold text-green-400">{formatCurrency(data.income)}</p>
-            <p className="text-xs text-[var(--muted)]">Este mes</p>
+      {/* Visual bar */}
+      <div className="space-y-2">
+        <div className="flex h-4 w-full rounded-full overflow-hidden gap-0.5">
+          {rules.map((r) => (
+            <div key={r.id} className="transition-all" style={{ width: `${Math.max(r.percentage, 0)}%`, backgroundColor: r.color }} title={`${r.label}: ${r.percentage}%`} />
+          ))}
+          {remaining > 0 && <div className="flex-1 bg-[var(--surface-2)]" />}
+        </div>
+        <div className="flex flex-wrap gap-3">
+          {rules.map((r) => (
+            <span key={r.id} className="flex items-center gap-1.5 text-xs text-[var(--muted)]">
+              <span className="h-2 w-2 rounded-full" style={{ backgroundColor: r.color }} />
+              {r.emoji} {r.label} ({r.percentage}%)
+            </span>
+          ))}
+        </div>
+      </div>
+
+      {/* Rules list */}
+      <div className="space-y-2">
+        {rules.map((rule) => (
+          <div key={rule.id} className="rounded-xl border border-[var(--border)] bg-[var(--surface)] p-4">
+            <div className="flex items-center gap-3">
+              <span className="text-base shrink-0">{rule.emoji ?? '•'}</span>
+              <div className="flex-1 min-w-0 space-y-2">
+                <input
+                  type="text"
+                  value={rule.label}
+                  onChange={(e) => updateLabel(rule.id, e.target.value)}
+                  className="w-full bg-transparent text-sm font-medium text-[var(--foreground)] focus:outline-none border-b border-transparent focus:border-[var(--border)] pb-0.5 transition-colors"
+                />
+                <div className="flex items-center gap-3">
+                  <div className="flex items-center gap-1.5">
+                    <input
+                      type="number" min="0" max="100" step="1"
+                      value={rule.percentage}
+                      onChange={(e) => updatePct(rule.id, e.target.value)}
+                      className="w-16 bg-[var(--surface-2)] text-[var(--foreground)] text-sm rounded-md px-2 py-1 focus:outline-none focus:ring-1 focus:ring-[var(--brand)] text-center"
+                    />
+                    <span className="text-sm text-[var(--muted)]">%</span>
+                  </div>
+                  {income > 0 && (
+                    <span className="text-sm font-semibold text-[var(--foreground)] tabular-nums">
+                      = {formatCurrency(income * (rule.percentage / 100))}
+                    </span>
+                  )}
+                </div>
+              </div>
+              <button onClick={() => removeRule(rule.id)} className="text-[var(--muted)] hover:text-red-400 transition-colors p-1 shrink-0">
+                <Trash2 className="h-4 w-4" />
+              </button>
+            </div>
           </div>
-          <div className="rounded-xl border border-red-500/30 bg-red-500/10 p-4 space-y-1 flex-1 min-w-[140px]">
-            <p className="text-xs text-red-400 uppercase tracking-wide flex items-center gap-1"><TrendingDown className="h-3 w-3" /> Gastos</p>
-            <p className="text-xl font-bold text-red-400">{formatCurrency(data.expenses)}</p>
-            <p className="text-xs text-[var(--muted)]">Este mes</p>
+        ))}
+
+      </div>
+
+      {/* Add rule */}
+      {adding ? (
+        <div className="rounded-xl border border-[var(--brand)]/30 bg-[var(--surface)] p-4 space-y-3">
+          <p className="text-sm font-medium text-[var(--foreground)]">Nueva categoría</p>
+          <div className="space-y-1.5">
+            <Label htmlFor="new-label">Nombre</Label>
+            <Input id="new-label" placeholder="Ej: Educación, Viajes..." value={newLabel} onChange={(e) => setNewLabel(e.target.value)} autoFocus />
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="new-pct">Porcentaje</Label>
+            <div className="flex items-center gap-2">
+              <Input id="new-pct" type="number" min="0" max="100" step="1" placeholder="0" value={newPct} onChange={(e) => setNewPct(e.target.value)} className="w-24" />
+              <span className="text-sm text-[var(--muted)]">%</span>
+              {newPct && income > 0 && <span className="text-sm text-[var(--brand)] font-medium ml-1">= {formatCurrency(income * (parseFloat(newPct) / 100))}</span>}
+            </div>
+          </div>
+          <div className="space-y-1.5">
+            <Label>Color</Label>
+            <div className="flex gap-2 flex-wrap">
+              {COLORS.map((c) => (
+                <button key={c} type="button" onClick={() => setNewColor(c)} className={`h-6 w-6 rounded-full transition-transform ${newColor === c ? 'scale-125 ring-2 ring-white ring-offset-1 ring-offset-[var(--surface)]' : ''}`} style={{ backgroundColor: c }} />
+              ))}
+            </div>
+          </div>
+          <div className="flex gap-2">
+            <Button variant="outline" size="sm" onClick={() => setAdding(false)}>Cancelar</Button>
+            <Button size="sm" onClick={addRule}>Agregar</Button>
           </div>
         </div>
-        <DisponibleBar expenses={data.expenses} />
-      </div>
+      ) : (
+        <button onClick={() => setAdding(true)} className="w-full rounded-xl border border-dashed border-[var(--border)] py-3 text-sm text-[var(--muted)] hover:border-[var(--brand)] hover:text-[var(--brand)] transition-colors flex items-center justify-center gap-2">
+          <Plus className="h-4 w-4" /> Agregar categoría
+        </button>
+      )}
 
+      {/* Summary + Guardar */}
+      {income > 0 && (
+        <div className="rounded-xl border border-[var(--border)] bg-[var(--surface)] p-4 space-y-2">
+          <p className="text-xs text-[var(--muted)] uppercase tracking-wide font-medium">Resumen de distribución</p>
+          {rules.map((r) => (
+            <div key={r.id} className="flex items-center justify-between text-sm">
+              <div className="flex items-center gap-2">
+                <span className="text-xs">{r.emoji}</span>
+                <span className="text-[var(--muted)]">{r.label}</span>
+                <span className="text-xs bg-[var(--surface-2)] text-[var(--muted)] px-1.5 rounded">{r.percentage}%</span>
+              </div>
+              <span className="font-semibold text-[var(--foreground)] tabular-nums">{formatCurrency(income * (r.percentage / 100))}</span>
+            </div>
+          ))}
+          <div className="pt-2 border-t border-[var(--border)] flex justify-between text-sm font-semibold">
+            <span className="text-[var(--foreground)]">Total comprometido</span>
+            <span className={grandTotal > income ? 'text-red-400' : 'text-[var(--brand)]'}>{formatCurrency(grandTotal)}</span>
+          </div>
+          <div className="flex justify-between text-sm">
+            <span className="text-[var(--muted)]">Libre disponible</span>
+            <span className={income - grandTotal >= 0 ? 'text-green-400 font-semibold' : 'text-red-400 font-semibold'}>{formatCurrency(income - grandTotal)}</span>
+          </div>
 
-      {/* Recent transactions */}
-      <div className="space-y-3">
-        <h2 className="text-sm font-semibold text-[var(--foreground)]">Movimientos recientes</h2>
-        <RecentTransactions />
-      </div>
+          {/* CTA */}
+          <div className="pt-3">
+            <button
+              onClick={guardarRegistro}
+              disabled={saving || saved}
+              className={`w-full rounded-xl py-3.5 text-sm font-bold transition-all flex items-center justify-center gap-2 ${
+                saved
+                  ? 'bg-green-500/20 text-green-400 border border-green-500/30'
+                  : 'bg-[var(--brand)] text-black hover:bg-[var(--brand-hover)] disabled:opacity-60'
+              }`}
+            >
+              {saved ? (
+                <><CheckCircle2 className="h-4 w-4" /> ¡Registro guardado! Redirigiendo...</>
+              ) : saving ? (
+                'Guardando...'
+              ) : (
+                '💾 Guardar registro de distribución'
+              )}
+            </button>
+            <p className="text-xs text-[var(--muted)] text-center mt-2">
+              Esto registrará los montos de tu distribución
+            </p>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
